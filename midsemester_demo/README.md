@@ -1,4 +1,13 @@
-# Mid-Semester Demo
+# Mid-Semester Demo (legacy — superseded by the final project)
+
+> **This is the original mid-semester submission**, preserved here for
+> reference only. The final project (`processing/`, `streaming/`,
+> `orchestration/` at the repo root — see the root [`README.md`](../README.md))
+> is the current, evolved implementation using real Docker, Kafka, Spark,
+> Airflow, and Iceberg. Table names and schema described in this folder's
+> own docs do **not** necessarily match the final project's tables — see
+> [`docs/data_model.md`](../docs/data_model.md) at the repo root for the
+> authoritative, up-to-date schema.
 
 This folder is a lightweight demo for the Data Engineering Mid-Semester Project.
 
@@ -12,10 +21,9 @@ It does not use Docker, Kafka, Spark, Airflow, Iceberg, or MinIO. Those are for 
 
 ## Run
 
-From PowerShell:
+From the repository root in PowerShell:
 
 ```powershell
-cd "C:\Users\10\Desktop\Data Engineer MidS"
 python .\midsemester_demo\build_midsemester_demo.py
 ```
 

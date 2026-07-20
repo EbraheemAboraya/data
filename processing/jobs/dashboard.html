@@ -87,7 +87,7 @@ main { padding: 24px 36px; }
     <h1>Revenue and Conversion Dashboard</h1>
     <p>Business question: Which product categories drive revenue, and where should the marketplace improve the purchase journey to increase conversion?</p>
   </div>
-  <span class="badge" style="background:#d1fae5;color:#065f46;">10/10 quality checks passed</span>
+  <span class="badge" style="background:#d1fae5;color:#065f46;">12/12 quality checks passed</span>
 </header>
 
 <main>
@@ -166,9 +166,36 @@ main { padding: 24px 36px; }
     </div>
   </div>
 
+  <div class="row2">
+    <div class="card">
+      <h2>Real-Time Stream Activity: Kafka &rarr; Bronze &rarr; Silver &rarr; Gold</h2>
+      <canvas id='streamChart' height='105'></canvas>
+    </div>
+    <div class="card">
+      <h2>Stream KPIs</h2>
+      <div class="kpis" style="grid-template-columns: repeat(3, 1fr);">
+        <div class="kpi">
+          <div class="label">Streamed Events</div>
+          <div class="value">75,000</div>
+          <div class="sub">via Kafka -&gt; Iceberg</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Streamed Sessions</div>
+          <div class="value">75,000</div>
+          <div class="sub">distinct session_id</div>
+        </div>
+        <div class="kpi amber">
+          <div class="label">Late Arrivals</div>
+          <div class="value">0.0%</div>
+          <div class="sub">0 events &gt; 60 min lag</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="quality">
     <h2>Data Quality &mdash;</h2>
-    <span class="chip">orders not empty</span><span class="chip">sessions not empty</span><span class="chip">no null order ids</span><span class="chip">unit price positive</span><span class="chip">late arrivals flagged</span><span class="chip">no dup products</span><span class="chip">scd one current row</span><span class="chip">no negative prices</span><span class="chip">conversion binary</span><span class="chip">summary dates not null</span>
+    <span class="chip">orders not empty</span><span class="chip">sessions not empty</span><span class="chip">no null order ids</span><span class="chip">unit price positive</span><span class="chip">late arrivals flagged</span><span class="chip">no dup products</span><span class="chip">scd one current row</span><span class="chip">no negative prices</span><span class="chip">conversion binary</span><span class="chip">summary dates not null</span><span class="chip">no duplicate order ids</span><span class="chip">streaming reached gold</span>
   </div>
 
 </main>
@@ -184,6 +211,8 @@ const funnelCounts = [18809, 9069, 4455];
 const channelLabels = ["affiliate", "direct", "organic", "paid_search", "social", "email"];
 const channelRates = [6.4, 6.1, 6.0, 6.0, 5.9, 5.2];
 const channelSessions = [6707, 11141, 24185, 13509, 10461, 8997];
+const streamTypeLabels = ["page_view", "product_view", "search", "add_to_cart", "checkout_start", "purchase_click"];
+const streamTypeCounts = [21023, 18809, 12663, 9069, 5981, 4455];
 
 new Chart(document.getElementById('trendChart'), {
   type: 'line',
@@ -247,6 +276,24 @@ new Chart(document.getElementById('funnelChart'), {
     }
   }
 });
+
+if (document.getElementById('streamChart')) {
+  new Chart(document.getElementById('streamChart'), {
+    type: 'bar',
+    data: {
+      labels: streamTypeLabels,
+      datasets: [{ data: streamTypeCounts, backgroundColor: '#8b5cf6', borderRadius: 4 }]
+    },
+    options: {
+      indexAxis: 'y',
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: '#f3f4f6' } },
+        y: { grid: { display: false } }
+      }
+    }
+  });
+}
 
 new Chart(document.getElementById('channelChart'), {
   type: 'bar',

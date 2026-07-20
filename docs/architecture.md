@@ -44,22 +44,25 @@ flowchart TD
         B4[bronze.reviews]
         B5[bronze.user_events]
         B6[bronze.user_events_stream\n48h watermark]
+        BQ[bronze.orders_quarantine\norders arrived greater than 48h late]
     end
 
     subgraph Silver["Silver Layer (cleaned)"]
         S1[silver.dim_product]
-        S2[silver.dim_product_pricing_scd\nSCD Type 2]
+        S2[silver.dim_product_pricing_scd\nreal SCD Type 2 - MERGE INTO]
+        S3[silver.user_events_stream_clean\ndeduped by event_id]
     end
 
     subgraph Gold["Gold Layer (aggregated)"]
-        G1[gold.fact_orders]
+        G1[gold.fact_orders\nincremental MERGE by order_id]
         G2[gold.fact_user_events]
         G3[gold.ecommerce_summary]
         G4[gold.ml_session_conversion]
+        G5[gold.realtime_event_summary\nstreaming only, kept separate\nto avoid double-counting]
     end
 
     subgraph Orchestration
-        AF[Airflow\nbatch_pipeline DAG\nstreaming_pipeline DAG]
+        AF[Airflow - unpaused by default\nbatch_pipeline DAG - daily\nstreaming_pipeline DAG - hourly\ntriggered by start.sh / start.ps1]
     end
 
     CSV -->|bronze_ingestion.py| B1
@@ -70,17 +73,21 @@ flowchart TD
     Kafka -->|streaming_consumer.py| B6
 
     B2 -->|silver_dimensions.py| S1
-    B3 -->|silver_dimensions.py| S2
+    B3 -->|silver_dimensions.py MERGE| S2
+    B6 -->|gold_streaming_summary.py dedup| S3
 
-    B1 --> |gold_facts.py| G1
+    B1 -->|gold_facts.py MERGE, greater than 48h quarantined| G1
+    B1 -->|gold_facts.py| BQ
     B5 --> |gold_facts.py| G2
     S1 --> G1
     G1 --> |gold_facts.py| G3
     G2 --> |gold_facts.py| G3
     G2 --> |gold_facts.py| G4
+    S3 -->|gold_streaming_summary.py| G5
+    G5 -->|build_dashboard.py| DASH[dashboard.html\nReal-Time Stream Activity section]
 
-    AF -->|schedules| B1
-    AF -->|schedules| B6
+    AF -->|triggers dags trigger| B1
+    AF -->|triggers dags trigger, starts consumer| B6
 ```
 
 ## Services & Ports
@@ -106,15 +113,18 @@ s3://warehouse/
 │   ├── product_pricing/
 │   ├── reviews/
 │   ├── user_events/
-│   └── user_events_stream/
+│   ├── user_events_stream/
+│   └── orders_quarantine/        # orders that arrived > 48h late
 ├── silver/
 │   ├── dim_product/
-│   └── dim_product_pricing_scd/
+│   ├── dim_product_pricing_scd/  # real SCD Type 2 (MERGE INTO + append)
+│   └── user_events_stream_clean/ # deduped streaming snapshot
 ├── gold/
-│   ├── fact_orders/
+│   ├── fact_orders/               # incremental MERGE upsert by order_id
 │   ├── fact_user_events/
 │   ├── ecommerce_summary/
-│   └── ml_session_conversion/
+│   ├── ml_session_conversion/
+│   └── realtime_event_summary/   # streaming-only, feeds the dashboard
 └── checkpoints/
     └── user_events_stream/
 ```

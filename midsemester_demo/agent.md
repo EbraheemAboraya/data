@@ -70,7 +70,7 @@ midsemester_demo/
 ## How To Run
 
 ```powershell
-cd "C:\Users\10\Desktop\Data Engineer MidS"
+# run from the repository root
 python .\midsemester_demo\build_midsemester_demo.py
 ```
 

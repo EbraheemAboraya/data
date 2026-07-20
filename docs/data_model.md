@@ -4,9 +4,9 @@
 
 | Layer | Purpose | Tables |
 |---|---|---|
-| **Bronze** | Raw data, as-is from source | orders, product_catalog, product_pricing, reviews, user_events, user_events_stream |
-| **Silver** | Cleaned, typed, validated dimensions | dim_product, dim_product_pricing_scd |
-| **Gold** | Aggregated, analytics-ready facts | fact_orders, fact_user_events, ecommerce_summary, ml_session_conversion |
+| **Bronze** | Raw data, as-is from source | orders, product_catalog, product_pricing, reviews, user_events, user_events_stream, orders_quarantine |
+| **Silver** | Cleaned, typed, validated dimensions | dim_product, dim_product_pricing_scd (real SCD Type 2), user_events_stream_clean |
+| **Gold** | Aggregated, analytics-ready facts | fact_orders (incremental merge), fact_user_events, ecommerce_summary, ml_session_conversion, realtime_event_summary |
 
 ---
 
@@ -127,6 +127,15 @@ Same schema as `user_events` plus:
 
 **Late-arrival watermark**: 48 hours on `event_time`.
 
+### bronze.orders_quarantine  *(late orders, append-only)*
+
+Same schema as `bronze.orders` plus `arrival_lag_hours` (DOUBLE) and
+`quarantined_at` (TIMESTAMP). Populated by `gold_facts.py::build_orders_quarantine`
+for every order whose `arrival_lag_hours > 48`. These orders are **not**
+loaded into `demo.gold.fact_orders`. Append-only with an anti-join guard on
+`order_id` so re-running the batch pipeline on the same static source does
+not re-insert the same quarantined order.
+
 ---
 
 ## Silver Layer
@@ -157,9 +166,9 @@ erDiagram
 
 `price_tier` values: `budget` (< $25) · `mid` (< $100) · `premium` (< $300) · `luxury` (≥ $300)
 
-### silver.dim_product_pricing_scd  *(SCD Type 2)*
+### silver.dim_product_pricing_scd  *(real SCD Type 2)*
 
-One row per price change.  `is_current = true` marks the active price.  `effective_to = null` for the current row.
+One row per price version.  `is_current = true` marks the active price.  `effective_to = null` for the current row.
 
 ```mermaid
 erDiagram
@@ -180,13 +189,41 @@ erDiagram
     }
 ```
 
+Built by `silver_dimensions.py`:
+- **Bootstrap** (table doesn't exist yet): loads the full historical version
+  set already present in the source CSV.
+- **Every later run**: `apply_scd_merge()` compares bronze's `is_current=true`
+  row per product (today's observed price) against the active Silver row on
+  `list_price`/`discount_pct`/`final_price`/`currency`. A detected change
+  closes the old row via `MERGE INTO ... WHEN MATCHED THEN UPDATE SET
+  is_current=false, effective_to=current_date()`, then appends a new
+  current-version row. Unchanged products are left untouched — re-running
+  with the same input creates zero new versions.
+- Proof script: [`processing/jobs/demo_scd_change.py`](../processing/jobs/demo_scd_change.py).
+
+### silver.user_events_stream_clean  *(deduplicated streaming snapshot)*
+
+Same columns as `bronze.user_events_stream`. Built by
+`gold_streaming_summary.py` — full recompute (`createOrReplace`, consistent
+with `dim_product`'s pattern) of the Bronze stream table with `event_id`
+nulls dropped and `dropDuplicates(["event_id"])` applied as a second
+safety net on top of the streaming query's own watermark+dedup.
+
 ---
 
 ## Gold Layer
 
-### gold.fact_orders
+### gold.fact_orders  *(incremental MERGE, late orders excluded)*
 
-One row per order.  Enriched with product category, brand, and computed `arrival_lag_hours`.
+One row per order.  Enriched with product category, brand, and computed
+`arrival_lag_hours`. Only orders with `arrival_lag_hours <= 48` (or no
+computable lag) are included — orders arriving later are routed to
+`demo.bronze.orders_quarantine` instead (see that table's definition
+above). Built by `gold_facts.py::build_fact_orders`: bootstrapped once,
+then upserted via `MERGE INTO ... ON t.order_id = s.order_id`, updating a
+matched row only when `total_amount`/`payment_status`/`shipping_status`/
+`quantity` differ, inserting unmatched rows. Re-running with the same
+static source performs zero duplicate inserts.
 
 ```mermaid
 erDiagram
@@ -294,14 +331,43 @@ erDiagram
     }
 ```
 
+### gold.realtime_event_summary  *(streaming only)*
+
+Daily/hourly aggregate of `silver.user_events_stream_clean`, grouped by
+`event_date`, `event_type`, `traffic_channel`, `device_type`.
+
+```mermaid
+erDiagram
+    GOLD_REALTIME_EVENT_SUMMARY {
+        date event_date
+        string event_type
+        string traffic_channel
+        string device_type
+        long event_count
+        long sessions
+        long late_arrival_count
+        double avg_ingestion_lag_minutes
+    }
+```
+
+Built by `gold_streaming_summary.py`, surfaced on the dashboard's
+"Real-Time Stream Activity" section — this is what proves the Kafka
+streaming path actually reaches the business layer instead of dead-ending
+at Bronze. Kept separate from `fact_user_events`/`ecommerce_summary`
+because the Kafka producer replays the same source CSV that
+`bronze_ingestion.py` already batch-loads; merging the two would
+double-count every event.
+
 ---
 
 ## Key Design Decisions
 
 | Decision | Rationale |
 |---|---|
-| SCD Type 2 for product pricing | Preserves historical price at time of order for accurate revenue analysis |
+| SCD Type 2 for product pricing (real change-detection) | Preserves historical price at time of order for accurate revenue analysis; only inserts a new version when the tracked pricing attributes actually change |
 | Watermark of 48 h on event stream | Handles out-of-order Kafka messages without unbounded state growth |
 | Bronze keeps raw types | Schema evolution is handled in Silver/Gold, not at ingestion |
-| `arrival_lag_hours` in fact_orders | Enables late-delivery SLA monitoring at query time |
+| `arrival_lag_hours` in fact_orders + 48h quarantine | Enables late-delivery SLA monitoring and keeps orders that arrived too late out of the business-facing fact table |
+| `fact_orders` / `dim_product_pricing_scd` incremental MERGE | Avoids full-table rebuilds and duplicate rows across repeated runs |
+| `realtime_event_summary` kept separate from batch event tables | Prevents double-counting since the Kafka producer replays the same source CSV already loaded in batch |
 | `ml_session_conversion` in gold | Pre-aggregated session features avoid repeated expensive joins in ML notebooks |

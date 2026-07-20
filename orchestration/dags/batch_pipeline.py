@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 
+from alerting import on_failure_alert
+
 log = logging.getLogger(__name__)
 
 # spark-submit prefix — runs the job on the standalone cluster inside the
@@ -27,22 +29,12 @@ SPARK_SUBMIT = (
     "--master spark://spark-master:7077 "
 )
 
-
-def _on_failure(context):
-    log.error(
-        "Task %s in DAG %s failed on %s",
-        context["task_instance"].task_id,
-        context["dag"].dag_id,
-        context["execution_date"],
-    )
-
-
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
-    "on_failure_callback": _on_failure,
+    "on_failure_callback": on_failure_alert,
     "email_on_failure": False,
 }
 

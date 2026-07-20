@@ -102,7 +102,7 @@ midsemester_demo/demo_outputs/quality_report.json
 From PowerShell:
 
 ```powershell
-cd "C:\Users\10\Desktop\Data Engineer MidS"
+# run from the repository root
 python .\midsemester_demo\build_midsemester_demo.py
 ```
 

@@ -25,6 +25,16 @@ Gold
   DQ-G4  fact_user_events     – no NULL event_id
   DQ-G5  ecommerce_summary    – no NULL summary_date
   DQ-G6  ml_session_conversion– converted column only contains 0 or 1
+  DQ-G7  fact_orders          – no duplicate order_id (incremental merge integrity)
+  DQ-G8  fact_orders          – arrival_time is never before event_time
+  DQ-G9  fact_orders / orders_quarantine – order_id sets are disjoint
+  DQ-S4  dim_product_pricing_scd – no duplicate pricing_sk
+  DQ-S5  dim_product_pricing_scd – effective_to is consistent with is_current
+
+Streaming (only run if the tables already exist — the streaming DAG runs on
+its own hourly schedule independent of the batch DAG that runs this file)
+  DQ-T1  user_events_stream        – no duplicate event_id
+  DQ-T2  realtime_event_summary    – row count > 0
 
 Exit code: 0 = all checks passed, 1 = at least one check failed.
 
@@ -123,6 +133,24 @@ def check_silver(spark):
     neg_price = pricing.filter(col("list_price") < 0).count()
     check("DQ-S3", neg_price == 0, f"rows with list_price < 0 = {neg_price}")
 
+    # DQ-S4: no duplicate pricing_sk (SCD version rows must be uniquely keyed)
+    dup_sk = (
+        pricing.groupBy("pricing_sk").agg(count("*").alias("n"))
+        .filter(col("n") > 1).count()
+    )
+    check("DQ-S4", dup_sk == 0, f"duplicate pricing_sk rows = {dup_sk}")
+
+    # DQ-S5: effective_to must be consistent with is_current on every SCD row
+    bad_scd = (
+        pricing
+        .filter(
+            ((col("is_current") == True) & col("effective_to").isNotNull())
+            | ((col("is_current") == False) & col("effective_to").isNull())
+        )
+        .count()
+    )
+    check("DQ-S5", bad_scd == 0, f"rows with inconsistent effective_to/is_current = {bad_scd}")
+
 
 # ── Gold checks ────────────────────────────────────────────────────────────────
 
@@ -168,6 +196,68 @@ def check_gold(spark):
     check("DQ-G6", bad_converted == 0,
           f"rows with converted not in {{0,1}} = {bad_converted}")
 
+    # DQ-G7: no duplicate order_id (proves the incremental MERGE never
+    # inserts a second row for an order it has already processed)
+    dup_orders = (
+        orders.groupBy("order_id").agg(count("*").alias("n"))
+        .filter(col("n") > 1).count()
+    )
+    check("DQ-G7", dup_orders == 0, f"duplicate order_id rows = {dup_orders}")
+
+    # DQ-G8: arrival_time must never be earlier than event_time
+    bad_arrival = orders.filter(col("arrival_time") < col("event_time")).count()
+    check("DQ-G8", bad_arrival == 0,
+          f"rows with arrival_time < event_time = {bad_arrival}")
+
+    # DQ-G9: fact_orders and orders_quarantine must never share an order_id
+    if table_exists(spark, "demo.bronze.orders_quarantine"):
+        quarantine = spark.table("demo.bronze.orders_quarantine")
+        overlap = (
+            orders.select("order_id")
+            .join(quarantine.select("order_id"), on="order_id", how="inner")
+            .count()
+        )
+        check("DQ-G9", overlap == 0,
+              f"order_id present in both fact_orders and orders_quarantine = {overlap}")
+    else:
+        print("  - DQ-G9 skipped: demo.bronze.orders_quarantine does not exist yet "
+              "(no late (>48h) orders have been quarantined)")
+
+
+def table_exists(spark, table: str) -> bool:
+    try:
+        spark.table(table)
+        return True
+    except Exception:
+        return False
+
+
+# ── Streaming checks (best-effort — the streaming DAG runs independently) ──────
+
+def check_streaming(spark):
+    sep = "-" * 50
+    print(f"\n  {sep}")
+    print("  Streaming layer (best-effort — skipped if not yet populated)")
+    print(f"  {sep}")
+
+    if not table_exists(spark, "demo.silver.user_events_stream_clean"):
+        print("  - DQ-T1 skipped: demo.silver.user_events_stream_clean does not exist yet "
+              "(streaming_pipeline DAG has not completed a cycle)")
+    else:
+        clean = spark.table("demo.silver.user_events_stream_clean")
+        dup_events = (
+            clean.groupBy("event_id").agg(count("*").alias("n"))
+            .filter(col("n") > 1).count()
+        )
+        check("DQ-T1", dup_events == 0, f"duplicate event_id in stream clean = {dup_events}")
+
+    if not table_exists(spark, "demo.gold.realtime_event_summary"):
+        print("  - DQ-T2 skipped: demo.gold.realtime_event_summary does not exist yet "
+              "(streaming_pipeline DAG has not completed a cycle)")
+    else:
+        n = spark.table("demo.gold.realtime_event_summary").count()
+        check("DQ-T2", n > 0, f"rows = {n:,}")
+
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
@@ -183,6 +273,7 @@ def main():
     check_bronze(spark)
     check_silver(spark)
     check_gold(spark)
+    check_streaming(spark)
 
     passed = sum(1 for _, ok, _ in _results if ok)
     failed = sum(1 for _, ok, _ in _results if not ok)

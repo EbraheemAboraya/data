@@ -30,6 +30,14 @@ def scalar(spark, sql):
     return 0
 
 
+def table_exists(spark, table):
+    try:
+        spark.table(table)
+        return True
+    except Exception:
+        return False
+
+
 def main():
     spark = get_spark()
     spark.sparkContext.setLogLevel("WARN")
@@ -130,6 +138,27 @@ def main():
         LIMIT 6
     """).collect()
 
+    # ── Real-time stream KPIs (proves Kafka -> Bronze -> Silver -> Gold -> here) ─
+    stream_available = table_exists(spark, "demo.gold.realtime_event_summary")
+    if stream_available:
+        stream_events = scalar(spark, "SELECT SUM(event_count) FROM demo.gold.realtime_event_summary") or 0
+        stream_sessions = scalar(spark, "SELECT SUM(sessions) FROM demo.gold.realtime_event_summary") or 0
+        stream_late = scalar(spark, "SELECT SUM(late_arrival_count) FROM demo.gold.realtime_event_summary") or 0
+        stream_late_rate = round(stream_late / stream_events * 100, 1) if stream_events else 0
+        stream_type_rows = spark.sql("""
+            SELECT event_type, SUM(event_count) AS events
+            FROM demo.gold.realtime_event_summary
+            GROUP BY event_type
+            ORDER BY events DESC
+            LIMIT 6
+        """).collect()
+    else:
+        stream_events = stream_sessions = stream_late = stream_late_rate = 0
+        stream_type_rows = []
+
+    stream_type_labels_js = json.dumps([str(r["event_type"]) for r in stream_type_rows])
+    stream_type_counts_js = json.dumps([int(r["events"] or 0) for r in stream_type_rows])
+
     top_category = str(cat_rows[0]["category"]) if cat_rows else "N/A"
     top_category_revenue = float(cat_rows[0]["revenue"] or 0) if cat_rows else 0
     total_category_revenue = sum(float(r["revenue"] or 0) for r in cat_rows)
@@ -160,6 +189,8 @@ def main():
         ("no negative prices",          scalar(spark, "SELECT COUNT(*) FROM demo.silver.dim_product_pricing_scd WHERE list_price < 0") == 0),
         ("conversion binary",           scalar(spark, "SELECT COUNT(*) FROM demo.gold.ml_session_conversion WHERE converted NOT IN (0,1)") == 0),
         ("summary dates not null",      scalar(spark, "SELECT COUNT(*) FROM demo.gold.ecommerce_summary WHERE summary_date IS NULL") == 0),
+        ("no duplicate order ids",      scalar(spark, "SELECT COUNT(*) FROM (SELECT order_id, COUNT(*) AS n FROM demo.gold.fact_orders GROUP BY order_id HAVING n > 1)") == 0),
+        ("streaming reached gold",      (not stream_available) or stream_events > 0),
     ]
 
     passed = sum(1 for _, ok in dq_checks if ok)
@@ -313,6 +344,24 @@ new Chart(document.getElementById('funnelChart'), {
   }
 });
 
+if (document.getElementById('streamChart')) {
+  new Chart(document.getElementById('streamChart'), {
+    type: 'bar',
+    data: {
+      labels: streamTypeLabels,
+      datasets: [{ data: streamTypeCounts, backgroundColor: '#8b5cf6', borderRadius: 4 }]
+    },
+    options: {
+      indexAxis: 'y',
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: '#f3f4f6' } },
+        y: { grid: { display: false } }
+      }
+    }
+  });
+}
+
 new Chart(document.getElementById('channelChart'), {
   type: 'bar',
   data: {
@@ -433,6 +482,33 @@ new Chart(document.getElementById('channelChart'), {
     </div>
   </div>
 
+  <div class="row2">
+    <div class="card">
+      <h2>Real-Time Stream Activity: Kafka &rarr; Bronze &rarr; Silver &rarr; Gold</h2>
+      {"<canvas id='streamChart' height='105'></canvas>" if stream_available and stream_events else "<p style='color:#6b7280;font-size:13px;'>No streaming data yet — start the streaming stack and trigger the <code>streaming_pipeline</code> Airflow DAG, then re-run this job.</p>"}
+    </div>
+    <div class="card">
+      <h2>Stream KPIs</h2>
+      <div class="kpis" style="grid-template-columns: repeat(3, 1fr);">
+        <div class="kpi">
+          <div class="label">Streamed Events</div>
+          <div class="value">{stream_events:,}</div>
+          <div class="sub">via Kafka -&gt; Iceberg</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Streamed Sessions</div>
+          <div class="value">{stream_sessions:,}</div>
+          <div class="sub">distinct session_id</div>
+        </div>
+        <div class="kpi amber">
+          <div class="label">Late Arrivals</div>
+          <div class="value">{stream_late_rate}%</div>
+          <div class="sub">{stream_late:,} events &gt; 60 min lag</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="quality">
     <h2>Data Quality &mdash;</h2>
     {quality_chips}
@@ -451,6 +527,8 @@ const funnelCounts = {funnel_counts_js};
 const channelLabels = {channel_labels_js};
 const channelRates = {channel_rates_js};
 const channelSessions = {channel_sessions_js};
+const streamTypeLabels = {stream_type_labels_js};
+const streamTypeCounts = {stream_type_counts_js};
 {js_charts}
 </script>
 
@@ -467,6 +545,7 @@ const channelSessions = {channel_sessions_js};
     print(f"    Conversion rate: {conv_rate}%")
     print(f"    Late deliveries: {late_count:,} ({late_rate}%)")
     print(f"    Avg rating     : {avg_rating}/5")
+    print(f"    Stream events  : {stream_events:,} ({'available' if stream_available else 'not available yet'})")
     print(f"\n  Data quality   : {passed}/{len(dq_checks)} checks passed")
     print(f"\n  Open on host: processing/jobs/dashboard.html")
     print(f"\n{sep}")

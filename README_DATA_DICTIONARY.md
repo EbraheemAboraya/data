@@ -53,7 +53,7 @@ Revenue by category, conversion funnel, top products, delayed shipments, return/
 Recommended ML problem:
 Predict whether a user session will convert to a purchase or predict risk of cart abandonment.
 
-Suggested DW tables:
+Suggested DW tables (planning notes — see below for what was actually built):
 - fact_user_event
 - fact_order
 - fact_review
@@ -66,3 +66,15 @@ Suggested DW tables:
 - gold_daily_sales_summary
 - gold_conversion_funnel
 - ml_session_conversion_features
+
+**Note:** the list above was an early planning sketch, not a spec. The
+tables actually implemented in `processing/jobs/` (see
+[`docs/data_model.md`](docs/data_model.md) for the authoritative schema)
+are: `dim_product`, `dim_product_pricing_scd` (real SCD Type 2),
+`user_events_stream_clean`, `fact_orders`, `fact_user_events`,
+`ecommerce_summary`, `ml_session_conversion`, `realtime_event_summary`, and
+the audit tables `orders_quarantine` and `user_events_stream`. Names like
+`dim_category_static`, `dim_customer_anonymous`, `dim_date`, `dim_channel`,
+`gold_daily_sales_summary`, and `gold_conversion_funnel` were never built —
+`ecommerce_summary` and `ml_session_conversion` cover the same business
+questions with a different, more consolidated table design.
